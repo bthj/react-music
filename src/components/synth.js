@@ -124,7 +124,9 @@ export default class Synth extends Component {
       const stepInterval = this.context.barInterval / this.context.resolution;
       this.props.steps.forEach((step) => {
         const time = barOffset + ((step[0] * stepInterval) / 1000);
-
+        console.log("stepValue: ", step[0]);
+        console.log("playbackTime: ", playbackTime);
+        console.log("time: ", time);
         this.context.scheduler.insert(playbackTime + time, this.playStep, {
           time: playbackTime,
           step,
@@ -162,6 +164,9 @@ export default class Synth extends Component {
         }
       });
     }
+
+    // !!! this delta is always negative; _time_ is scheduling in the past
+    console.log("time - this.context.audioContext.currentTime: ", (time - this.context.audioContext.currentTime));
 
     osc.start(time);
     env.start(time);

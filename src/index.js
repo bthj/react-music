@@ -17,6 +17,10 @@ import Sampler from './components/sampler.js';
 import Song from './components/song.js';
 import Synth from './components/synth.js';
 
+import WaveControl from './components/wavecontrol.js';
+import WaveSource from './components/wavesource.js';
+import VCA from './components/vca.js';
+
 export {
   Analyser,
   Bus,
@@ -36,4 +40,8 @@ export {
   Sampler,
   Song,
   Synth,
+
+  WaveControl,
+  WaveSource,
+  VCA,
 };
