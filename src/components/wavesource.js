@@ -35,6 +35,7 @@ type Context = {
 
   controlWaveSamples: Array<number>;
   controlledAudioParamName: string;
+  controllers: Array<Object>;
 };
 
 // based on Sampler
@@ -85,6 +86,7 @@ export default class WaveSource extends Component {
 
     controlWaveSamples: PropTypes.object,
     controlledAudioParamName: PropTypes.string,
+    controllers: PropTypes.array,
   };
   static childContextTypes = {
     audioContext: PropTypes.object,
@@ -99,6 +101,7 @@ export default class WaveSource extends Component {
 
     controlWaveSamples: PropTypes.object,
     controlledAudioParamName: PropTypes.string,
+    controllers: PropTypes.array,
   };
   constructor(props: Props, context: Context) {
     super(props);
@@ -197,35 +200,100 @@ export default class WaveSource extends Component {
       }
     }
 
-    // TODO: control wave samples must come in here from all enclosing wave controls
-    // along with the node type and audio param name, applied in order...
+    // create nodes, wire them up
+    // and apply value curves according to controller definitions:
+    const nodeGraph = [];
+    this.context.controllers.forEach( oneController => {
+      console.log("oneController: ", oneController);
+      console.log("oneController time: ", time);
+      console.log("oneController: duration: ", this.buffer.duration);
+      const duration = this.buffer.duration * durationMultiplication;
+      switch (oneController.nodeType) {
+        case 'AudioBufferSourceNode':
+          // the source node is already created from this.buffer
+          source[oneController.audioParamName].setValueCurveAtTime(
+            oneController.controlWaveSamples,
+            time, duration
+          );
+          nodeGraph.push( source );
+          break;
+        case 'WaveShaperNode':
+          const distortion = this.context.audioContext.createWaveShaper();
+          distortion[oneController.audioParamName] = oneController.controlWaveSamples;
+          nodeGraph.push( distortion );
+          break;
+        case 'BiquadFilterNode':
+          const biquadFilter = this.context.audioContext.createBiquadFilter();
+          if( oneController.type ) biquadFilter.type = oneController.type;
+          if( oneController.audioParamInitialValue ) {
+            biquadFilter[oneController.audioParamName].value = oneController.audioParamInitialValue;
+          }
+          biquadFilter[oneController.audioParamName].setValueCurveAtTime(
+            oneController.controlWaveSamples,
+            time, duration
+          );
+          nodeGraph.push( biquadFilter );
+          break;
+        case 'GainNode':
+          const VCA = this.context.audioContext.createGain();
+          // set the amplifier's initial gain value
+          if( oneController.audioParamInitialValue ) {
+            VCA[oneController.audioParamName].value = oneController.audioParamInitialValue;
+          }
+          VCA[oneController.audioParamName].setValueCurveAtTime(
+            oneController.controlWaveSamples,
+            time, duration
+          );
+          nodeGraph.push( VCA );
+          break;
+      }
+    });
 
     const scheduledVsCurrentTimeDelta = 0; // (this.context.audioContext.currentTime - time)*1.5;
     // setValueCurveAtTime on controlledAudioParamName with controlWaveSamples
-    if( this.context.controlWaveSamples && this.context.controlledAudioParamName ) {
-      source[this.context.controlledAudioParamName].setValueCurveAtTime(
-        this.context.controlWaveSamples,
-        // this.context.audioContext.currentTime,
-        time + scheduledVsCurrentTimeDelta,
-        this.buffer.duration * durationMultiplication
-      );
-    }
+    // if( this.context.controlWaveSamples && this.context.controlledAudioParamName ) {
+    //   console.log("this.context.controlWaveSamples: ", this.context.controlWaveSamples);
+    //   console.log("setting value curve: ", this.context.controlledAudioParamName);
+    //   console.log("this.buffer.duration: ", this.buffer.duration);
+    //   console.log("source[this.context.controlledAudioParamName]: ", source[this.context.controlledAudioParamName]);
+    //   source[this.context.controlledAudioParamName].setValueCurveAtTime(
+    //     this.context.controlWaveSamples,
+    //     // this.context.audioContext.currentTime,
+    //     time + scheduledVsCurrentTimeDelta,
+    //     this.buffer.duration * durationMultiplication
+    //   );
+    // }
 
     // ASDR
-    const amplitudeGain = this.context.audioContext.createGain();
-    amplitudeGain.gain.value = 0;
-    amplitudeGain.connect(this.connectNode);
+    // const amplitudeGain = this.context.audioContext.createGain();
+    // amplitudeGain.gain.value = 0;
+    // amplitudeGain.connect(this.connectNode);
+    //
+    // const env = contour(this.context.audioContext, {
+    //   attack: this.props.envelope.attack,
+    //   decay: this.props.envelope.decay,
+    //   sustain: this.props.envelope.sustain,
+    //   release: this.props.envelope.release,
+    // });
+    //
+    // env.connect(amplitudeGain.gain);
 
-    const env = contour(this.context.audioContext, {
-      attack: this.props.envelope.attack,
-      decay: this.props.envelope.decay,
-      sustain: this.props.envelope.sustain,
-      release: this.props.envelope.release,
-    });
-
-    env.connect(amplitudeGain.gain);
-
-    source.connect(amplitudeGain);
+    if( nodeGraph.length ) {
+      let lastNode;
+      nodeGraph.forEach( (oneNode, nodeIdx) => {
+        if( nodeIdx > 0 ) {
+          console.log(`connecting ${lastNode} to ${oneNode}`);
+          lastNode.connect( oneNode );
+        }
+        if( nodeIdx === nodeGraph.length-1 ) {
+          console.log(`connecting ${oneNode} to out ${this.connectNode}`);
+          oneNode.connect( this.connectNode );
+        }
+        lastNode = oneNode;
+      });
+    } else {
+      source.connect(amplitudeGain);
+    }
 
     // source.connect(this.connectNode);
 
@@ -239,11 +307,12 @@ export default class WaveSource extends Component {
     }
 
     source.start( time, 0, this.buffer.duration );
-    env.start(time);
+    // env.start(time);
 
-    const finish = env.stop(
-      (this.context.audioContext.currentTime + this.buffer.duration) * durationMultiplication );
-    source.stop(finish);
+    // const finish = env.stop(
+    //   (this.context.audioContext.currentTime + this.buffer.duration) * durationMultiplication );
+    // source.stop(finish);
+    const stopTime = (this.context.audioContext.currentTime + this.buffer.duration) * durationMultiplication;
 
     // this.context.scheduler.nextTick(
     //   time + this.buffer.duration, // * durationMultiplication,

@@ -100,7 +100,7 @@ export default class VCA extends Component {
     }
   }
   playStep(e: Object) {
-    console.log("VCA playStep: ", e); // TODO: doesn't get called
+    console.log("VCA playStep: ", e);
     const { step, time } = e.args;
     const durationMultiplication = 1.55;  // TODO: don't know why needed
 

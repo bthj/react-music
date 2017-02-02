@@ -47,10 +47,28 @@ export default class WaveControl extends Component {
     controlWaveSamples: PropTypes.object,
     controlWaveDuration: PropTypes.number,
     controlledAudioParamName: PropTypes.string,
+    // TODO: remove the above ^
+    controllers: PropTypes.array,
   };
   constructor( props ) {
     super( props );
-    this.state = { controlWaveSamples: undefined, duration: 0 };
+    // TODO:
+    // this.state = {
+    // controllers: [
+    // {
+    // controlWaveSamples: ...,
+    // nodeType: ...,  eg gain node, BiquadFilter, WaveShaper
+    // audioParamName
+    // }
+    // ]
+    // controlWaveSamples: undefined, duration: 0 };
+    this.state = {
+      controlWaveSamples: undefined,
+      duration: 0,
+
+      controllers: [],
+      controllerIndexesLoadingSamples: []
+    };
   }
   getChildContext(): Object {
     return {
@@ -58,6 +76,8 @@ export default class WaveControl extends Component {
       controlWaveSamples: this.state.controlWaveSamples,
       controlWaveDuration: this.state.duration,
       controlledAudioParamName: this.props.audioParamName,
+      // TODO: remove the above ^
+      controllers: this.state.controllers
     };
   }
   componentDidMount() {
@@ -68,13 +88,41 @@ export default class WaveControl extends Component {
 
     // TODO: check if this.props.sample is string or Float32Array
     // ...only use BufferLoader if string (pointing to a sample)
-    const bufferLoader = new BufferLoader(
-      this.context.audioContext,
-      [ this.props.sample ],
-      this.bufferLoaded.bind(this)
-    );
 
-    bufferLoader.load();
+    // TODO: use BufferLoader to load all samples from all controllers...
+
+    const controllerIndexesLoadingSamples = [];
+    const samplePathsToLoad = [];
+    this.props.controllers.forEach( (oneController, ctrlIdx) => {
+      if( typeof oneController.controlWaveSamples === 'string' ) {
+        controllerIndexesLoadingSamples.push( ctrlIdx );
+        samplePathsToLoad.push( oneController.controlWaveSamples );
+        console.log(`controller ${ctrlIdx} has sample as string`);
+      }
+    });
+    this.setState({
+      controllers: this.props.controllers
+    }, () => {
+      this.loadSamplePaths( samplePathsToLoad, controllerIndexesLoadingSamples );
+    });
+
+    // if( samplePathsToLoad.length ) {
+    //   this.setState({
+    //     controllerIndexesLoadingSamples
+    //   }, () => {
+    //     const bufferLoader = new BufferLoader(
+    //       this.context.audioContext,
+    //       samplePathsToLoad,
+    //       this.bufferLoaded.bind(this)
+    //     );
+    //     bufferLoader.load();
+    //   });
+    // } else {
+    //   // we don't have to load any samples, so we can update the state immediately
+    //   this.setState({
+    //     controllers: this.props.controllers
+    //   });
+    // }
   }
   componentWillReceiveProps( nextProps: Props ) {
     if( this.props.sample !== nextProps.sample ) {
@@ -86,15 +134,52 @@ export default class WaveControl extends Component {
 
       // TODO: check if nextProps.sample is string or Float32Array
       // ...only use BufferLoader if string (pointing to a sample)
-      const bufferLoader = new BufferLoader(
-        this.context.audioContext,
-        [ nextProps.sample ], // TODO: multiple control waves
-        this.bufferLoaded.bind(this)
-      );
 
-      bufferLoader.load();
+      // TODO: find those samples in all nextProps.controllers
+      // that are not the same as those currently loaded,
+      // and use BufferLoader to load those samples...
+      // ...how to map them to correct entries in this.state.controllers?
+
+      const controllerIndexesLoadingSamples = [];
+      const samplePathsToLoad = [];
+      nextProps.controllers.forEach( (oneController, ctrlIdx) => {
+        if( typeof oneController.controlWaveSamples === 'string'
+            && oneController.controlWaveSamples !==
+              this.props.controllers[ctrlIdx].controlWaveSamples ) {
+          controllerIndexesLoadingSamples.push( ctrlIdx );
+          samplePathsToLoad.push( oneController.controlWaveSamples );
+        }
+      });
+      this.loadSamplePaths( samplePathsToLoad, controllerIndexesLoadingSamples );
+
+      // const bufferLoader = new BufferLoader(
+      //   this.context.audioContext,
+      //   [ nextProps.sample ], // TODO: multiple control waves
+      //   this.bufferLoaded.bind(this)
+      // );
+      //
+      // bufferLoader.load();
     }
   }
+
+  loadSamplePaths(
+      samplePathsToLoad: Array<String>,
+      controllerIndexesLoadingSamples: Array<Number> ) {
+
+    if( samplePathsToLoad.length ) {
+      this.setState({
+        controllerIndexesLoadingSamples
+      }, () => {
+        const bufferLoader = new BufferLoader(
+          this.context.audioContext,
+          samplePathsToLoad,
+          this.bufferLoaded.bind(this)
+        );
+        bufferLoader.load();
+      });
+    }
+  }
+
   componentWillUnmount() {
     const master = this.context.getMaster();
 
@@ -103,19 +188,50 @@ export default class WaveControl extends Component {
   }
   bufferLoaded( buffers: Array<Object> ) {
     console.log("writing control wave samples");
+    const controllerIndexes = this.state.controllerIndexesLoadingSamples;
+    const controllers = this.state.controllers;
+    buffers.forEach( oneBuffer => {
+      // TODO: we need to have access to the controllers here
+      // - should already be on state?
+      // set oneBuffer to the next controllerIndexesLoadingSamples slot
+      // in controllers
+      const nextControllerIndex = controllerIndexes.shift();
+      const controlWaveSamples = new Float32Array( oneBuffer.getChannelData(0) );
+      const controlWaveRange = controllers[nextControllerIndex].range;
+      if( controlWaveRange ) {
+        controllers[nextControllerIndex].controlWaveSamples = controlWaveSamples.map(
+          oneSample => this.remapNumberToRange(
+            oneSample, -1, 1,
+            controlWaveRange[0], controlWaveRange[1]
+          )
+        );
+      } else {
+        controllers[nextControllerIndex].controlWaveSamples = controlWaveSamples;
+      }
+    });
     this.setState({
-      controlWaveSamples: new Float32Array( buffers[0].getChannelData(0) ).map(
-        oneSample => this.remapNumberToRange(
-          oneSample, -1, 1,
-          this.props.range[0], this.props.range[1]
-        )
-      ),
-      duration: buffers[0].duration
+      controllers,
+      controllerIndexesLoadingSamples: [],
+      // TODO: duration
     }, () => {
+      console.log("controllers loaded: ", controllers);
       const master = this.context.getMaster();
       delete master.buffers[this.id];
       this.context.bufferLoaded();
     });
+    // this.setState({
+    //   controlWaveSamples: new Float32Array( buffers[0].getChannelData(0) ).map(
+    //     oneSample => this.remapNumberToRange(
+    //       oneSample, -1, 1,
+    //       this.props.range[0], this.props.range[1]
+    //     )
+    //   ),
+    //   duration: buffers[0].duration
+    // }, () => {
+    //   const master = this.context.getMaster();
+    //   delete master.buffers[this.id];
+    //   this.context.bufferLoaded();
+    // });
   }
   remapNumberToRange( inputNumber, fromMin, fromMax, toMin, toMax ) {
     return (inputNumber - fromMin) / (fromMax - fromMin) * (toMax - toMin) + toMin;
