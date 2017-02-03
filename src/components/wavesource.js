@@ -65,7 +65,7 @@ export default class WaveSource extends Component {
   };
   static defaultProps = {
     envelope: {
-      attack: 0.05,
+      attack: 0.08,
       decay: .8,
       sustain: 0.6,
       release: 0.5,
@@ -182,16 +182,15 @@ export default class WaveSource extends Component {
   playStep(e: Object) {
     const { step, time } = e.args;
 
-    //TODO: compare (delta) time and this.context.audioContext.currentTime
-    // console.log("this.context.audioContext.currentTime: ", this.context.audioContext.currentTime);
     console.log("time@playStep: ", time);
+    // compare (delta) time and this.context.audioContext.currentTime
     console.log("this.context.audioContext.currentTime - time: ", (this.context.audioContext.currentTime - time));
 
     const durationMultiplication = 1.55;  // TODO: don't know why needed
 
     const source = this.context.audioContext.createBufferSource();
+    source.buffer = this.renderedBuffer;
     // source.loop = true;
-    source.buffer = this.buffer;
     if (source.detune) {
       if (Array.isArray(step)) {
         source.detune.value = (this.props.detune + step[1]) * 100;
@@ -200,102 +199,21 @@ export default class WaveSource extends Component {
       }
     }
 
-    // create nodes, wire them up
-    // and apply value curves according to controller definitions:
-    const nodeGraph = [];
-    this.context.controllers.forEach( oneController => {
-      console.log("oneController: ", oneController);
-      console.log("oneController time: ", time);
-      console.log("oneController: duration: ", this.buffer.duration);
-      const duration = this.buffer.duration * durationMultiplication;
-      switch (oneController.nodeType) {
-        case 'AudioBufferSourceNode':
-          // the source node is already created from this.buffer
-          source[oneController.audioParamName].setValueCurveAtTime(
-            oneController.controlWaveSamples,
-            time, duration
-          );
-          nodeGraph.push( source );
-          break;
-        case 'WaveShaperNode':
-          const distortion = this.context.audioContext.createWaveShaper();
-          distortion[oneController.audioParamName] = oneController.controlWaveSamples;
-          nodeGraph.push( distortion );
-          break;
-        case 'BiquadFilterNode':
-          const biquadFilter = this.context.audioContext.createBiquadFilter();
-          if( oneController.type ) biquadFilter.type = oneController.type;
-          if( oneController.audioParamInitialValue ) {
-            biquadFilter[oneController.audioParamName].value = oneController.audioParamInitialValue;
-          }
-          biquadFilter[oneController.audioParamName].setValueCurveAtTime(
-            oneController.controlWaveSamples,
-            time, duration
-          );
-          nodeGraph.push( biquadFilter );
-          break;
-        case 'GainNode':
-          const VCA = this.context.audioContext.createGain();
-          // set the amplifier's initial gain value
-          if( oneController.audioParamInitialValue ) {
-            VCA[oneController.audioParamName].value = oneController.audioParamInitialValue;
-          }
-          VCA[oneController.audioParamName].setValueCurveAtTime(
-            oneController.controlWaveSamples,
-            time, duration
-          );
-          nodeGraph.push( VCA );
-          break;
-      }
+    // ASDR
+    const amplitudeGain = this.context.audioContext.createGain();
+    amplitudeGain.gain.value = 0;
+    amplitudeGain.connect(this.connectNode);
+
+    const env = contour(this.context.audioContext, {
+      attack: this.props.envelope.attack,
+      decay: this.props.envelope.decay,
+      sustain: this.props.envelope.sustain,
+      release: this.props.envelope.release,
     });
 
-    const scheduledVsCurrentTimeDelta = 0; // (this.context.audioContext.currentTime - time)*1.5;
-    // setValueCurveAtTime on controlledAudioParamName with controlWaveSamples
-    // if( this.context.controlWaveSamples && this.context.controlledAudioParamName ) {
-    //   console.log("this.context.controlWaveSamples: ", this.context.controlWaveSamples);
-    //   console.log("setting value curve: ", this.context.controlledAudioParamName);
-    //   console.log("this.buffer.duration: ", this.buffer.duration);
-    //   console.log("source[this.context.controlledAudioParamName]: ", source[this.context.controlledAudioParamName]);
-    //   source[this.context.controlledAudioParamName].setValueCurveAtTime(
-    //     this.context.controlWaveSamples,
-    //     // this.context.audioContext.currentTime,
-    //     time + scheduledVsCurrentTimeDelta,
-    //     this.buffer.duration * durationMultiplication
-    //   );
-    // }
+    env.connect(amplitudeGain.gain);
 
-    // ASDR
-    // const amplitudeGain = this.context.audioContext.createGain();
-    // amplitudeGain.gain.value = 0;
-    // amplitudeGain.connect(this.connectNode);
-    //
-    // const env = contour(this.context.audioContext, {
-    //   attack: this.props.envelope.attack,
-    //   decay: this.props.envelope.decay,
-    //   sustain: this.props.envelope.sustain,
-    //   release: this.props.envelope.release,
-    // });
-    //
-    // env.connect(amplitudeGain.gain);
-
-    if( nodeGraph.length ) {
-      let lastNode;
-      nodeGraph.forEach( (oneNode, nodeIdx) => {
-        if( nodeIdx > 0 ) {
-          console.log(`connecting ${lastNode} to ${oneNode}`);
-          lastNode.connect( oneNode );
-        }
-        if( nodeIdx === nodeGraph.length-1 ) {
-          console.log(`connecting ${oneNode} to out ${this.connectNode}`);
-          oneNode.connect( this.connectNode );
-        }
-        lastNode = oneNode;
-      });
-    } else {
-      source.connect(amplitudeGain);
-    }
-
-    // source.connect(this.connectNode);
+    source.connect( amplitudeGain );
 
     if (this.props.busses) {
       const master = this.context.getMaster();
@@ -307,28 +225,126 @@ export default class WaveSource extends Component {
     }
 
     source.start( time, 0, this.buffer.duration );
-    // env.start(time);
+    env.start(time);
 
-    // const finish = env.stop(
-    //   (this.context.audioContext.currentTime + this.buffer.duration) * durationMultiplication );
-    // source.stop(finish);
-    const stopTime = (this.context.audioContext.currentTime + this.buffer.duration) * durationMultiplication;
+    const stopTime = (time + this.buffer.duration) * durationMultiplication;
+    const finish = env.stop( stopTime );
+    source.stop( finish );
 
-    // this.context.scheduler.nextTick(
-    //   time + this.buffer.duration, // * durationMultiplication,
-    //   // this.context.audioContext.currentTime + this.buffer.duration * durationMultiplication,
-    //   () => {
-    //   // console.log('some clicks, but less with the durationMultiplication:');
-    //   source.disconnect();
-    //   env.disconnect();
-    // });
+    this.context.scheduler.nextTick( stopTime, () => {
+      source.disconnect();
+      env.disconnect();
+    });
   }
+
   bufferLoaded(buffers: Array<Object>) {
     this.buffer = buffers[0];
-    const master = this.context.getMaster();
-    delete master.buffers[this.id];
-    this.context.bufferLoaded();
+
+    setTimeout(
+      // TODO: temporary delay hack,
+      // - need to find another way to ensure controller buffers have loaded
+      function() {
+        this.renderBufferWithControllers().then( renderedBuffer => {
+
+          this.renderedBuffer = renderedBuffer;
+
+          const master = this.context.getMaster();
+          delete master.buffers[this.id];
+          this.context.bufferLoaded();
+        });
+      }.bind(this)
+      , 1000
+    );
   }
+  renderBufferWithControllers() {
+    return new Promise( (resolve, reject) => {
+
+      const sizeInSamples = this.context.audioContext.sampleRate * this.buffer.duration;
+      const offlineCtx = new OfflineAudioContext( 1 /*channels*/,
+        sizeInSamples, this.context.audioContext.sampleRate );
+
+      const source = offlineCtx.createBufferSource();
+      source.buffer = this.buffer;
+
+      // create nodes, wire them up
+      // and apply value curves according to controller definitions:
+      const durationMultiplication = 1.55;  // TODO: don't know why needed
+      const nodeGraph = [];
+      nodeGraph.push( source );
+      this.context.controllers.forEach( oneController => {
+        console.log("oneController: ", oneController);
+        const duration = this.buffer.duration * durationMultiplication;
+        switch (oneController.nodeType) {
+          case 'AudioBufferSourceNode':
+            // the source node is already created from this.buffer
+            source[oneController.audioParamName].setValueCurveAtTime(
+              oneController.controlWaveSamples,
+              offlineCtx.currentTime, duration
+            );
+            break;
+          case 'WaveShaperNode':
+            const distortion = offlineCtx.createWaveShaper();
+            distortion[oneController.audioParamName] = oneController.controlWaveSamples;
+            nodeGraph.push( distortion );
+            break;
+          case 'BiquadFilterNode':
+            const biquadFilter = offlineCtx.createBiquadFilter();
+            if( oneController.type ) biquadFilter.type = oneController.type;
+            if( oneController.audioParamInitialValue ) {
+              biquadFilter[oneController.audioParamName].value = oneController.audioParamInitialValue;
+            }
+            biquadFilter[oneController.audioParamName].setValueCurveAtTime(
+              oneController.controlWaveSamples,
+              offlineCtx.currentTime, duration
+            );
+            nodeGraph.push( biquadFilter );
+            break;
+          case 'GainNode':
+            const VCA = offlineCtx.createGain();
+            // set the amplifier's initial gain value
+            if( oneController.audioParamInitialValue ) {
+              VCA[oneController.audioParamName].value = oneController.audioParamInitialValue;
+            }
+            VCA[oneController.audioParamName].setValueCurveAtTime(
+              oneController.controlWaveSamples,
+              offlineCtx.currentTime, duration
+            );
+            nodeGraph.push( VCA );
+            break;
+        }
+      });
+
+      if( nodeGraph.length ) {
+        let lastNode;
+        nodeGraph.forEach( (oneNode, nodeIdx) => {
+          if( nodeIdx > 0 ) {
+            console.log(`connecting ${lastNode} to ${oneNode}`);
+            lastNode.connect( oneNode );
+          }
+          if( nodeIdx === nodeGraph.length-1 ) {
+            console.log(`connecting ${oneNode} to out ${offlineCtx.destination}`);
+            oneNode.connect( offlineCtx.destination );
+          }
+          lastNode = oneNode;
+        });
+      } else {
+        source.connect( offlineCtx.destination );
+      }
+
+      source.start();
+
+      offlineCtx.startRendering().then( renderedBuffer => {
+        console.log('Rendering completed successfully');
+
+        resolve( renderedBuffer );
+
+      }).catch( err => {
+        reject( "Not able to render audio buffer from this.buffer and this.context.controllers: " + err )
+      });
+
+    });
+  }
+
   render(): React.Element<any> {
     return <span>{this.props.children}</span>;
   }
