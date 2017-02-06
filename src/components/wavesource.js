@@ -136,10 +136,11 @@ export default class WaveSource extends Component {
     bufferLoader.load();
   }
   componentWillReceiveProps(nextProps: Props) {
-
+    const master = this.context.getMaster();
     this.connectNode.gain.value = nextProps.gain;
+
     if (this.props.sample !== nextProps.sample) {
-      const master = this.context.getMaster();
+
       delete master.buffers[this.id];
 
       this.id = uuid.v1();
@@ -152,6 +153,19 @@ export default class WaveSource extends Component {
       );
 
       bufferLoader.load();
+    }
+
+    if( this.context.controllers.length ) {
+      let isAnyControllerWaveSampleNotLoaded = false;
+      this.context.controllers.every( oneController => {
+        isAnyControllerWaveSampleNotLoaded = (typeof oneController.controlWaveSamples === 'string');
+        return isAnyControllerWaveSampleNotLoaded;
+      });
+      if( ! isAnyControllerWaveSampleNotLoaded // all controller wave samples have been loaded
+        && master.buffers[this.id] // but we haven't rendered the buffer with those controllers
+      ) {
+        this.controllerBuffersLoaded();
+      }
     }
   }
   componentWillUnmount() {
@@ -240,21 +254,22 @@ export default class WaveSource extends Component {
   bufferLoaded(buffers: Array<Object>) {
     this.buffer = buffers[0];
 
-    setTimeout(
-      // TODO: temporary delay hack,
-      // - need to find another way to ensure controller buffers have loaded
-      function() {
-        this.renderBufferWithControllers().then( renderedBuffer => {
+    if( ! this.context.controllers.length ) {
+      this.clearBuffersLoadingLock();
+    } // otherwise we'll let controllerBuffersLoaded clear the locks when done
+  }
+  controllerBuffersLoaded() {
+    this.renderBufferWithControllers().then( renderedBuffer => {
 
-          this.renderedBuffer = renderedBuffer;
+      this.renderedBuffer = renderedBuffer;
 
-          const master = this.context.getMaster();
-          delete master.buffers[this.id];
-          this.context.bufferLoaded();
-        });
-      }.bind(this)
-      , 1000
-    );
+      this.clearBuffersLoadingLock();
+    });
+  }
+  clearBuffersLoadingLock() {
+    const master = this.context.getMaster();
+    delete master.buffers[this.id];
+    this.context.bufferLoaded();
   }
   renderBufferWithControllers() {
     return new Promise( (resolve, reject) => {
