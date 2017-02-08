@@ -25,7 +25,8 @@
     "audio-contour": "0.0.1",
     "note-parser": "^2.0.0",
     "tunajs": "^0.4.5",
-    "uuid": "^2.0.2"
+    "uuid": "^2.0.2",
+    "worker-loader": "^0.7.1"
   },
   "peerDependencies": {
     "react": "^15.2.1",

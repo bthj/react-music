@@ -3,12 +3,12 @@ import React, { PropTypes, Component } from 'react';
 import uuid from 'uuid';
 
 import { BufferLoader } from '../utils/buffer-loader';
+import { remapNumberToRange } from '../utils/range';
 
 type Props = {
   children?: any;
   // connect: Function;
-  sample: string;
-  range: Array<number>;
+  controllers: Array<Object>;
 };
 
 type Context = {
@@ -25,8 +25,7 @@ export default class WaveControl extends Component {
   static propTypes = {
     children: PropTypes.node,
     connect: PropTypes.func,
-    sample: PropTypes.string.isRequired,
-    range: PropTypes.array.isRequired
+    controllers: PropTypes.array.isRequired,
   }
   static defaultProps = {
     connect: (node) => node.gain,
@@ -88,7 +87,8 @@ export default class WaveControl extends Component {
     });
   }
   componentWillReceiveProps( nextProps: Props ) {
-    if( this.props.sample !== nextProps.sample ) {
+    // if( this.props.sample !== nextProps.sample ) {
+    // TODO: check if there are differences between controllers
       const master = this.context.getMaster();
       delete master.buffers[this.id];
 
@@ -111,7 +111,7 @@ export default class WaveControl extends Component {
         }
       });
       this.loadSamplePaths( samplePathsToLoad, controllerIndexesLoadingSamples );
-    }
+    // }
   }
 
   loadSamplePaths(
@@ -150,7 +150,7 @@ export default class WaveControl extends Component {
       const controlWaveRange = controllers[nextControllerIndex].range;
       if( controlWaveRange ) {
         controllers[nextControllerIndex].controlWaveSamples = controlWaveSamples.map(
-          oneSample => this.remapNumberToRange(
+          oneSample => remapNumberToRange(
             oneSample, -1, 1,
             controlWaveRange[0], controlWaveRange[1]
           )
@@ -169,9 +169,7 @@ export default class WaveControl extends Component {
       this.context.bufferLoaded();
     });
   }
-  remapNumberToRange( inputNumber, fromMin, fromMax, toMin, toMax ) {
-    return (inputNumber - fromMin) / (fromMax - fromMin) * (toMax - toMin) + toMin;
-  }
+
   render(): React.Element<any> {
     return <span>{this.props.children}</span>;
   }

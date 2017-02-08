@@ -19,6 +19,7 @@ import Synth from './components/synth.js';
 
 import WaveControl from './components/wavecontrol.js';
 import WaveSource from './components/wavesource.js';
+import WaveTable from './components/wavetable.js';
 import VCA from './components/vca.js';
 
 export {
@@ -43,5 +44,6 @@ export {
 
   WaveControl,
   WaveSource,
+  WaveTable,
   VCA,
 };

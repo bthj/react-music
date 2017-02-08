@@ -4,6 +4,12 @@ import uuid from 'uuid';
 import contour from 'audio-contour';
 
 import { BufferLoader } from '../utils/buffer-loader';
+import { concatenateTypedArrays } from '../utils/arrays';
+
+const GainValuesPerAudioWavesWorker = require("worker?inline!../workers/gain-values-per-audio-wave-worker.js");
+const RemapControlArrayToValueCurveRangeWorker = require("worker?inline!../workers/remap-control-array-to-value-curve-range-worker.js");
+
+const numWorkers = navigator.hardwareConcurrency || 4;
 
 type Envelope = {
   attack?: number;
@@ -37,7 +43,7 @@ type Context = {
 };
 
 // based on Sampler
-export default class WaveSource extends Component {
+export default class WaveTable extends Component {
   buffer: Object;
   bufferLoaded: Function;
   connectNode: Object;
@@ -123,7 +129,7 @@ export default class WaveSource extends Component {
 
     const bufferLoader = new BufferLoader(
       this.context.audioContext,
-      [this.props.sample],
+      this.props.waves,
       this.bufferLoaded
     );
 
@@ -133,7 +139,7 @@ export default class WaveSource extends Component {
     const master = this.context.getMaster();
     this.connectNode.gain.value = nextProps.gain;
 
-    if (this.props.sample !== nextProps.sample) {
+    if( this.isWaveSetDifferentToCurrentProps(nextProps.waves) ) {
 
       delete master.buffers[this.id];
 
@@ -142,14 +148,13 @@ export default class WaveSource extends Component {
 
       const bufferLoader = new BufferLoader(
         this.context.audioContext,
-        [nextProps.sample ],
+        nextProps.waves,
         this.bufferLoaded
       );
 
       bufferLoader.load();
     }
 
-    // check if controller samples have loaded and then trigger rendering
     if( this.context.controllers.length ) {
       let isAnyControllerWaveSampleNotLoaded = false;
       this.context.controllers.every( oneController => {
@@ -170,6 +175,16 @@ export default class WaveSource extends Component {
     delete master.instruments[this.id];
     this.connectNode.disconnect();
   }
+
+  isWaveSetDifferentToCurrentProps( waves ) {
+    let isAnyWaveDifferent = false;
+    waves.every( (oneWave, index) => {
+      isAnyWaveDifferent = oneWave !== this.props.waves[index];
+      return isAnyWaveDifferent;
+    });
+    return isAnyWaveDifferent;
+  }
+
   getSteps(playbackTime: number) {
     const totalBars = this.context.getMaster().getMaxBars();
     const loopCount = totalBars / this.context.bars;
@@ -233,10 +248,10 @@ export default class WaveSource extends Component {
       });
     }
 
-    source.start( time, 0, this.buffer.duration );
+    source.start( time, 0, this.getWaveDuration() );
     env.start(time);
 
-    const stopTime = (time + this.buffer.duration) * durationMultiplication;
+    const stopTime = (time + this.getWaveDuration()) * durationMultiplication;
     const finish = env.stop( stopTime );
     source.stop( finish );
 
@@ -246,14 +261,24 @@ export default class WaveSource extends Component {
     });
   }
 
+  getWaveDuration() {
+    if( this.waveBuffers.length ) {
+      return this.waveBuffers[0].duration;
+    } else {
+      return 0;
+    }
+  }
+
   bufferLoaded(buffers: Array<Object>) {
-    this.buffer = buffers[0];
+    console.log("bufferLoaded");
+    this.waveBuffers = buffers;
 
     if( ! this.context.controllers.length ) {
       this.clearBuffersLoadingLock();
     } // otherwise we'll let controllerBuffersLoaded clear the locks when done
   }
   controllerBuffersLoaded() {
+    console.log("controllerBuffersLoaded");
     this.renderBufferWithControllers().then( renderedBuffer => {
 
       this.renderedBuffer = renderedBuffer;
@@ -269,91 +294,182 @@ export default class WaveSource extends Component {
   renderBufferWithControllers() {
     return new Promise( (resolve, reject) => {
 
-      const sizeInSamples = this.context.audioContext.sampleRate * this.buffer.duration;
+      const sizeInSamples = this.context.audioContext.sampleRate * this.getWaveDuration();
       const offlineCtx = new OfflineAudioContext( 1 /*channels*/,
         sizeInSamples, this.context.audioContext.sampleRate );
 
-      const source = offlineCtx.createBufferSource();
-      source.buffer = this.buffer;
+      const audioSources = this.waveBuffers.map( oneBuffer => {
+        const oneAudioSource = offlineCtx.createBufferSource();
+        oneAudioSource.buffer = oneBuffer;
+        return oneAudioSource;
+      });
 
-      // create nodes, wire them up
-      // and apply value curves according to controller definitions:
       const durationMultiplication = 1.55;  // TODO: don't know why needed
-      const nodeGraph = [];
-      nodeGraph.push( source );
-      this.context.controllers.forEach( oneController => {
-        console.log("oneController: ", oneController);
-        const duration = this.buffer.duration * durationMultiplication;
-        switch (oneController.nodeType) {
-          case 'AudioBufferSourceNode':
-            // the source node is already created from this.buffer
-            source[oneController.audioParamName].setValueCurveAtTime(
-              oneController.controlWaveSamples,
-              offlineCtx.currentTime, duration
-            );
-            break;
-          case 'WaveShaperNode':
-            const distortion = offlineCtx.createWaveShaper();
-            distortion[oneController.audioParamName] = oneController.controlWaveSamples;
-            nodeGraph.push( distortion );
-            break;
-          case 'BiquadFilterNode':
-            const biquadFilter = offlineCtx.createBiquadFilter();
-            if( oneController.type ) biquadFilter.type = oneController.type;
-            if( oneController.audioParamInitialValue ) {
-              biquadFilter[oneController.audioParamName].value = oneController.audioParamInitialValue;
-            }
-            biquadFilter[oneController.audioParamName].setValueCurveAtTime(
-              oneController.controlWaveSamples,
-              offlineCtx.currentTime, duration
-            );
-            nodeGraph.push( biquadFilter );
-            break;
-          case 'GainNode':
-            const VCA = offlineCtx.createGain();
-            // set the amplifier's initial gain value
-            if( oneController.audioParamInitialValue ) {
-              VCA[oneController.audioParamName].value = oneController.audioParamInitialValue;
-            }
-            VCA[oneController.audioParamName].setValueCurveAtTime(
-              oneController.controlWaveSamples,
-              offlineCtx.currentTime, duration
-            );
-            nodeGraph.push( VCA );
-            break;
+
+      let mixWaveController = null;
+      this.context.controllers.some( oneController => {
+        if( 'mixwave' === oneController.nodeType ) {
+          mixWaveController = oneController;
+          return true;
         }
       });
 
-      if( nodeGraph.length ) {
-        let lastNode;
-        nodeGraph.forEach( (oneNode, nodeIdx) => {
-          if( nodeIdx > 0 ) {
-            console.log(`connecting ${lastNode} to ${oneNode}`);
-            lastNode.connect( oneNode );
-          }
-          if( nodeIdx === nodeGraph.length-1 ) {
-            console.log(`connecting ${oneNode} to out ${offlineCtx.destination}`);
-            oneNode.connect( offlineCtx.destination );
-          }
-          lastNode = oneNode;
-        });
+      if( mixWaveController ) {
+
+        const duration = this.getWaveDuration() * durationMultiplication;
+
+        // gain values for each audio wave in the wave table,
+        // each controlled by a value curve from the calculated gain values
+        this.spawnMultipleGainValuesPerAudioWaveWorkers(
+          this.props.waves.length, mixWaveController.controlWaveSamples
+        ).then( gainValues => {
+
+          this.getAudioSourceGains( gainValues, offlineCtx, duration )
+          .then( audioSourceGains => {
+
+            // connect each audio source to a gain node,
+            audioSources.forEach(
+              (audioSource, index) => audioSource.connect( audioSourceGains[index] ) );
+
+            // instantiate a merger; mixer
+            let mergerNode = offlineCtx.createChannelMerger( audioSources.length );
+
+            // connect the output of each audio source gain to the mixer
+            audioSourceGains.forEach(
+              (audioGain, index) => audioGain.connect( mergerNode, 0, index ) );
+
+            // connect the mixer to the output device
+            mergerNode.connect( offlineCtx.destination );
+
+            console.log(`starting rendering of ${audioSources.length} waves mixed with controller wave: `, mixWaveController);
+
+            // start all the audio sources
+            let currentTime = offlineCtx.currentTime;
+            audioSources.forEach( audioSource => audioSource.start(currentTime) );
+
+            offlineCtx.startRendering().then( renderedBuffer => {
+              console.log('Rendering completed successfully');
+
+              resolve( renderedBuffer );
+
+            }).catch( err => {
+              reject( "Not able to render audio buffer from this.waveBuffers and this.context.controllers: " + err )
+            });
+
+          }); // gain value curve remapping promise
+
+        }); // gain calculation promise
+
+
       } else {
-        source.connect( offlineCtx.destination );
+        reject( "Wave table wasn't wired up with gains set according to mix wave, probably because the mix wave was missing." );
       }
-
-      source.start();
-
-      offlineCtx.startRendering().then( renderedBuffer => {
-        console.log('Rendering completed successfully');
-
-        resolve( renderedBuffer );
-
-      }).catch( err => {
-        reject( "Not able to render audio buffer from this.buffer and this.context.controllers: " + err )
-      });
 
     });
   }
+
+
+
+  spawnMultipleGainValuesPerAudioWaveWorkers( audioWaveCount, controlWave ) {
+    const chunk = Math.round( controlWave.length / numWorkers );
+
+    const gainValuePromises = [];
+    for( let i=0, j=controlWave.length; i<j; i+=chunk ) {
+      const controlWaveSlice = controlWave.slice( i, i+chunk );
+
+      gainValuePromises.push(
+        this.spawnOneGainValuesPerAudioWaveWorker(
+          audioWaveCount, controlWaveSlice )
+      );
+    }
+    return Promise.all( gainValuePromises ).then( arrayOfSubGainValues => {
+
+      return this.getCombinedGainValuesFromSubResults( arrayOfSubGainValues );
+    });
+  }
+
+  spawnOneGainValuesPerAudioWaveWorker( audioWaveCount, controlWave ) {
+    const promise = new Promise( (resolve, reject) => {
+      const gainValuesPerAudioWaveWorker = new GainValuesPerAudioWavesWorker();
+      gainValuesPerAudioWaveWorker.postMessage({
+        audioWaveCount,
+        controlWave
+      }, [controlWave.buffer] );
+      gainValuesPerAudioWaveWorker.onmessage = (e) => {
+
+        resolve( e.data.gainValues );
+      };
+    });
+    return promise;
+  }
+
+  getCombinedGainValuesFromSubResults( arrayOfSubGainValues ) {
+
+    // initialize a Map of gain values using the first sub result as template
+    const gainValues = new Map( [...arrayOfSubGainValues[0].entries()].map( oneEntry => {
+      return [
+         oneEntry[0],
+         // will hold sub sample arrays, which will then be concatenated:
+         new Array(arrayOfSubGainValues.length)
+       ];
+    }) );
+
+    // combine gain values from each sub result
+    const gainSubArrays = [];
+    arrayOfSubGainValues.forEach( (subGainValues, subIndex) => {
+      for( let [gainIndex, gainSubValues] of subGainValues ) {
+        // add sub array of gain values
+        gainValues.get( gainIndex )[subIndex] = gainSubValues;
+      }
+    });
+    for( let [gainIndex, gainValuesSubArrays] of gainValues ) {
+      gainValues.set(gainIndex,
+        // combine the sub arrays
+        concatenateTypedArrays(Float32Array, gainValuesSubArrays) );
+    }
+    return gainValues;
+  }
+
+
+
+  getAudioSourceGains( gainValues, audioCtx, duration ) {
+
+    const gainValueCurvePromises = [];
+    gainValues.forEach( (oneGainControlArray, gainIndex) => {
+
+      gainValueCurvePromises.push(
+        this.getGainControlArrayRemappedToValueCurveRange( oneGainControlArray )
+      );
+    });
+    return Promise.all( gainValueCurvePromises ).then( gainValueCurveArrays => {
+      const audioSourceGains = [];
+      gainValueCurveArrays.forEach( oneValueCurveArray => {
+        let VCA = audioCtx.createGain();
+        VCA.gain.setValueCurveAtTime(
+          oneValueCurveArray, audioCtx.currentTime, duration );
+        audioSourceGains.push( VCA );
+      });
+      return audioSourceGains;
+    });
+  }
+
+  getGainControlArrayRemappedToValueCurveRange( gainControlArray ) {
+
+    return new Promise(function(resolve, reject) {
+      const remapControlArrayToValueCurveRangeWorker =
+        new RemapControlArrayToValueCurveRangeWorker();
+
+      remapControlArrayToValueCurveRangeWorker.postMessage({
+        gainControlArray
+      }, [gainControlArray.buffer] );
+
+      remapControlArrayToValueCurveRangeWorker.onmessage = (e) => {
+        resolve( e.data.valueCurve );
+      };
+    });
+  }
+
+
 
   render(): React.Element<any> {
     return <span>{this.props.children}</span>;
