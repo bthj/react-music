@@ -87,8 +87,8 @@ export default class WaveControl extends Component {
     });
   }
   componentWillReceiveProps( nextProps: Props ) {
-    // if( this.props.sample !== nextProps.sample ) {
-    // TODO: check if there are differences between controllers
+
+    if( this.isControllerSetDifferentToCurrentProps(nextProps.controllers) ) {
       const master = this.context.getMaster();
       delete master.buffers[this.id];
 
@@ -111,7 +111,22 @@ export default class WaveControl extends Component {
         }
       });
       this.loadSamplePaths( samplePathsToLoad, controllerIndexesLoadingSamples );
-    // }
+    }
+  }
+
+  isControllerSetDifferentToCurrentProps( controllers ) {
+    let isAnyControllerDifferent = controllers.length !== this.props.controllers.length;
+    if( ! isAnyControllerDifferent ) {
+      controllers.every( (oneController, index) => {
+        isAnyControllerDifferent =
+          oneController.controlWaveSamples !== this.props.controllers[index].controlWaveSamples
+          || oneController.nodeType !== this.props.controllers[index].nodeType
+          || oneController.audioParamName !== this.props.controllers[index].audioParamName
+          || oneController.range !== this.props.controllers[index].range;
+        return isAnyControllerDifferent;
+      });
+    }
+    return isAnyControllerDifferent;
   }
 
   loadSamplePaths(
