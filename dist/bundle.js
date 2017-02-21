@@ -15119,15 +15119,23 @@
 	  }, {
 	    key: 'componentDidMount',
 	    value: function componentDidMount() {
-	      this.id = _uuid2.default.v1();
 
+	      this.id = _uuid2.default.v1();
 	      var master = this.context.getMaster();
 	      master.instruments[this.id] = this.getSteps;
-	      master.buffers[this.id] = 1;
 
-	      var bufferLoader = new _bufferLoader.BufferLoader(this.context.audioContext, [this.props.sample], this.bufferLoaded);
+	      if (this.isAudiobuffer(this.props.sample)) {
 
-	      bufferLoader.load();
+	        this.renderedBuffer = this.props.sample;
+	      } else {
+	        // we assume a string as a path / url to a sample
+
+	        master.buffers[this.id] = 1;
+
+	        var bufferLoader = new _bufferLoader.BufferLoader(this.context.audioContext, [this.props.sample], this.bufferLoaded);
+
+	        bufferLoader.load();
+	      }
 	    }
 	  }, {
 	    key: 'componentWillReceiveProps',
@@ -15137,20 +15145,26 @@
 	      var master = this.context.getMaster();
 	      this.connectNode.gain.value = nextProps.gain;
 
-	      if (this.props.sample !== nextProps.sample) {
+	      if (this.isAudiobuffer(this.props.sample)) {
 
-	        delete master.buffers[this.id];
+	        this.renderedBuffer = this.props.sample;
+	      } else {
 
-	        this.id = _uuid2.default.v1();
-	        master.buffers[this.id] = 1;
+	        if (this.props.sample !== nextProps.sample) {
 
-	        var bufferLoader = new _bufferLoader.BufferLoader(this.context.audioContext, [nextProps.sample], this.bufferLoaded);
+	          delete master.buffers[this.id];
 
-	        bufferLoader.load();
+	          this.id = _uuid2.default.v1();
+	          master.buffers[this.id] = 1;
+
+	          var bufferLoader = new _bufferLoader.BufferLoader(this.context.audioContext, [nextProps.sample], this.bufferLoaded);
+
+	          bufferLoader.load();
+	        }
 	      }
 
 	      // check if controller samples have loaded and then trigger rendering
-	      if (this.context.controllers.length) {
+	      if (this.context.controllers && this.context.controllers.length) {
 	        (function () {
 	          var isAnyControllerWaveSampleNotLoaded = false;
 	          _this2.context.controllers.every(function (oneController) {
@@ -15173,6 +15187,11 @@
 	      delete master.buffers[this.id];
 	      delete master.instruments[this.id];
 	      this.connectNode.disconnect();
+	    }
+	  }, {
+	    key: 'isAudiobuffer',
+	    value: function isAudiobuffer(sample) {
+	      return Object.prototype.toString.call(sample).indexOf("AudioBuffer") > -1;
 	    }
 	  }, {
 	    key: 'getSteps',
@@ -15255,10 +15274,10 @@
 	        })();
 	      }
 
-	      source.start(time, 0, this.buffer.duration);
+	      source.start(time, 0, this.renderedBuffer.duration);
 	      env.start(time);
 
-	      var stopTime = (time + this.buffer.duration) * durationMultiplication;
+	      var stopTime = (time + this.renderedBuffer.duration) * durationMultiplication;
 	      var finish = env.stop(stopTime);
 	      source.stop(finish);
 
@@ -15272,7 +15291,7 @@
 	    value: function bufferLoaded(buffers) {
 	      this.buffer = buffers[0];
 
-	      if (!this.context.controllers.length) {
+	      if (!this.context.controllers || !this.context.controllers.length) {
 	        this.clearBuffersLoadingLock();
 	      } // otherwise we'll let controllerBuffersLoaded clear the locks when done
 	    }

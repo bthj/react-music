@@ -115,42 +115,58 @@ export default class WaveSource extends Component {
     };
   }
   componentDidMount() {
-    this.id = uuid.v1();
 
+    this.id = uuid.v1();
     const master = this.context.getMaster();
     master.instruments[this.id] = this.getSteps;
-    master.buffers[this.id] = 1;
 
-    const bufferLoader = new BufferLoader(
-      this.context.audioContext,
-      [this.props.sample],
-      this.bufferLoaded
-    );
+    if( this.isAudiobuffer(this.props.sample) ) {
 
-    bufferLoader.load();
-  }
-  componentWillReceiveProps(nextProps: Props) {
-    const master = this.context.getMaster();
-    this.connectNode.gain.value = nextProps.gain;
+      this.renderedBuffer = this.props.sample;
 
-    if (this.props.sample !== nextProps.sample) {
+    } else {
+      // we assume a string as a path / url to a sample
 
-      delete master.buffers[this.id];
-
-      this.id = uuid.v1();
       master.buffers[this.id] = 1;
 
       const bufferLoader = new BufferLoader(
         this.context.audioContext,
-        [nextProps.sample ],
+        [this.props.sample],
         this.bufferLoaded
       );
 
       bufferLoader.load();
     }
+  }
+  componentWillReceiveProps(nextProps: Props) {
+    const master = this.context.getMaster();
+    this.connectNode.gain.value = nextProps.gain;
+
+    if( this.isAudiobuffer(this.props.sample) ) {
+
+      this.renderedBuffer = this.props.sample;
+
+    } else {
+
+      if (this.props.sample !== nextProps.sample) {
+
+        delete master.buffers[this.id];
+
+        this.id = uuid.v1();
+        master.buffers[this.id] = 1;
+
+        const bufferLoader = new BufferLoader(
+          this.context.audioContext,
+          [nextProps.sample],
+          this.bufferLoaded
+        );
+
+        bufferLoader.load();
+      }
+    }
 
     // check if controller samples have loaded and then trigger rendering
-    if( this.context.controllers.length ) {
+    if( this.context.controllers && this.context.controllers.length ) {
       let isAnyControllerWaveSampleNotLoaded = false;
       this.context.controllers.every( oneController => {
         isAnyControllerWaveSampleNotLoaded = (typeof oneController.controlWaveSamples === 'string');
@@ -170,6 +186,11 @@ export default class WaveSource extends Component {
     delete master.instruments[this.id];
     this.connectNode.disconnect();
   }
+
+  isAudiobuffer( sample ) {
+    return Object.prototype.toString.call( sample ).indexOf("AudioBuffer") > -1;
+   }
+
   getSteps(playbackTime: number) {
     const totalBars = this.context.getMaster().getMaxBars();
     const loopCount = totalBars / this.context.bars;
@@ -233,10 +254,10 @@ export default class WaveSource extends Component {
       });
     }
 
-    source.start( time, 0, this.buffer.duration );
+    source.start( time, 0, this.renderedBuffer.duration );
     env.start(time);
 
-    const stopTime = (time + this.buffer.duration) * durationMultiplication;
+    const stopTime = (time + this.renderedBuffer.duration) * durationMultiplication;
     const finish = env.stop( stopTime );
     source.stop( finish );
 
@@ -249,7 +270,7 @@ export default class WaveSource extends Component {
   bufferLoaded(buffers: Array<Object>) {
     this.buffer = buffers[0];
 
-    if( ! this.context.controllers.length ) {
+    if( ! this.context.controllers || ! this.context.controllers.length ) {
       this.clearBuffersLoadingLock();
     } // otherwise we'll let controllerBuffersLoaded clear the locks when done
   }
